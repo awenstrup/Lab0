@@ -8,6 +8,7 @@ import picos as pic
 import networkx as nx
 import itertools
 import cvxopt
+import matplotlib.pyplot as plt
 
 
 class Division:
@@ -80,7 +81,7 @@ class Division:
 
         return flag1
 
-    def create_network(self, teamID):
+    def create_network(self, teamID, show=False):
         '''Builds up the network needed for solving the badminton elimination
         problem as a network flows problem & stores it in self.G. Returns a
         dictionary of saturated edges that maps team pairs to the amount of
@@ -93,9 +94,48 @@ class Division:
 
         saturated_edges = {}
 
-        #TODO: implement this
+        # Reset the graph
+        self.G = nx.DiGraph()
 
+        # Get dict of all other teams
+        remaining_teams = dict(self.teams)
+        remaining_teams.pop(teamID)
+
+        # Populate saturated edges and first layer of G
+        for pair in itertools.combinations(remaining_teams, 2):
+            num = self.teams[pair[0]].get_against(pair[1])
+            saturated_edges[pair] = num
+            self.G.add_edge('S', pair, capacity=num)
+
+        # Populate second layer of G
+        for pair in saturated_edges:
+            self.G.add_edge(pair, pair[0])
+            self.G.add_edge(pair, pair[1])
+
+        # Populate third layer of G
+        for team in remaining_teams:
+            self.G.add_edge(team, 'T', capacity=self.max_allowed(teamID, team))
+
+        if show:
+            pos = nx.spring_layout(self.G)
+            labels = {}
+            for edge in self.G.edges:
+                if "capacity" in self.G.edges[edge[0], edge[1]]:
+                    labels[edge] = self.G.edges[edge[0], edge[1]]["capacity"]
+            nx.draw_networkx(self.G, pos=pos)
+            nx.draw_networkx_edge_labels(self.G, pos, edge_labels=labels)
+            plt.show()
+        
         return saturated_edges
+
+    def max_allowed(self, t1: int, t2: int) -> int:
+        """Given two team id's t1 and t2, assume t1 wins all of their remaining
+        games. Then, find out and return how many games t2 can win without
+        displacing t1 from the top of the leaderboard.
+        """
+        team1 = self.teams[t1]
+        team2 = self.teams[t2]
+        return team1.wins + team1.remaining - team2.wins - 1
 
     def network_flows(self, saturated_edges):
         '''Uses network flows to determine if the team with given team ID
@@ -107,10 +147,10 @@ class Division:
         the amount of additional games they have against each other
         return: True if team is eliminated, False otherwise
         '''
+        max_flow, flows = nx.algorithms.flow.maximum_flow(self.G, 'S', 'T')
+        games_remaining = sum([x for x in saturated_edges.values()])
 
-        #TODO: implement this
-
-        return False
+        return False if max_flow == games_remaining else True 
 
     def linear_programming(self, saturated_edges):
         '''Uses linear programming to determine if the team with given team ID
@@ -126,10 +166,56 @@ class Division:
 
         maxflow=pic.Problem()
 
-        #TODO: implement this
-        # we recommend using the 'cvxopt' solver once you set up the problem
+        F = maxflow.add_variable('F')
+        f = {}
 
-        return False
+        # get edge capacities
+        c={}
+        for e in self.G.edges():
+            d = self.G[e[0]][e[1]]
+            if "capacity" in d:
+                if d["capacity"] < 0: 
+                    # even if we win all games, still behind this team
+                    # eliminate now, no need to solve
+                    return True
+                c[(e[0], e[1])]  = d["capacity"]
+        cap=pic.new_param('c',c)
+
+        # 0 <= flow <= capacity for each edge
+        for e in self.G.edges():
+            f[e] = maxflow.add_variable(f'f[{e}]')
+            if "capacity" in self.G[e[0]][e[1]]:
+                maxflow.add_constraint(f[e] <= cap[e])
+            maxflow.add_constraint(f[e] >= 0)
+
+        # flow_in == flow_out for each node; source_out == sink_in
+        for n in self.G.adj:
+            if n == 'S' or n == 'T':
+                pass
+            else:
+                maxflow.add_constraint(
+                    pic.sum([f[(x, n)] for x in self.G.predecessors(n)]) == 
+                    pic.sum([f[(n, x)] for x in self.G.successors(n)])
+                )
+
+        # flow == flow out of source
+        maxflow.add_constraint(
+            F == pic.sum([f[('S', x)] for x in self.G.successors('S')])
+        )
+
+        # seems like this overconstrains the system sometimes...
+        # flow out of source == flow into sink
+        # maxflow.add_constraint(
+        #     pic.sum([f[(x, 'T')] for x in self.G.predecessors('T')]) ==
+        #     pic.sum([f[('S', x)] for x in self.G.successors('S')])
+        # ) 
+
+        # set objective and solve
+        maxflow.set_objective("max", F)  
+        maxflow.solve(solver="cvxopt")   
+        
+        games_remaining = sum([x for x in saturated_edges.values()])
+        return False if (abs(F - games_remaining) < 0.1) else True 
 
 
     def checkTeam(self, team):
