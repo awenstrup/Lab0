@@ -149,6 +149,8 @@ class Division:
         '''
         max_flow, flows = nx.algorithms.flow.maximum_flow(self.G, 'S', 'T')
         games_remaining = sum([x for x in saturated_edges.values()])
+        print(f"max flow nf: {max_flow}")
+        print(f"games remaining nf: {games_remaining}")
 
         return False if max_flow == games_remaining else True 
 
@@ -211,11 +213,18 @@ class Division:
         # ) 
 
         # set objective and solve
+        # print(maxflow)
         maxflow.set_objective("max", F)  
         maxflow.solve(solver="cvxopt")   
         
         games_remaining = sum([x for x in saturated_edges.values()])
-        return False if (abs(F - games_remaining) < 0.1) else True 
+        flow = float(F) # this is very dumb
+        """
+        An essay on overloading operators: Alex Wenstrup
+
+        Never do this. Especially here and now. Please.
+        """
+        return not (abs(flow - games_remaining) < 0.1)
 
 
     def checkTeam(self, team):
